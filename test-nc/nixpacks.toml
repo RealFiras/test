@@ -1,8 +1,5 @@
 [phases.setup]
-# نزود باكيجات النظام اللي نحتاجها وقت التشغيل
-# اختَر نسخة واحدة من بايثون (311 أو 312). أي واحدة منهم شغّالة.
 nixPkgs = ["python311", "socat"]
 
 [start]
-# نشغّل server.py عبر python3 ومن خلال bash -lc لضبط PATH
-cmd = "socat TCP-LISTEN:${PORT},fork,reuseaddr EXEC:\"bash -lc 'python3 server.py'\",pty,setsid,ctty"
+cmd = "socat -d -d TCP-LISTEN:9000,fork,reuseaddr,crnl EXEC:"python3 -u ./server.py",pty,setsid,ctty"
