@@ -1,0 +1,7 @@
+# يثبّت حزم Nix الإضافية في مرحلة setup
+[phases.setup]
+nixPkgs = ["...", "socat"]
+
+# أمر التشغيل
+[start]
+cmd = "socat TCP-LISTEN:${PORT},fork,reuseaddr EXEC:\"python server.py\",pty,setsid,ctty"
