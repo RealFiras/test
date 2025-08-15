@@ -1,171 +1,232 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# 4Hats Shop — hat-only win path (2 intended vulns: hidden 'add', high discount bonus)
+import os, secrets, sys, time, math
+from decimal import Decimal, InvalidOperation
 
-import sys, time, base64
+FLAG = "4hats{gre@t_hat_&cup_sh#p}"
+TYPE_DELAY = 0.010
+FAST_BANNER_DELAY = 0.002
 
-# ===================== Settings =====================
-SLOW_DELAY = 0.02   # per-char delay for "typewriter" effect
-MAX_WRONG  = 3
+# Intended vuln #2: large discount → credit bonus
+HIGH_DISCOUNT_THRESHOLD = Decimal("10000000")  # discount >= this grants bonus
+BONUS_CREDIT = 1_000_000
 
-RED   = "\033[31m"
-RESET = "\033[0m"
-BOLD  = "\033[1m"
-
-def type_out(text, delay=SLOW_DELAY, end="\n"):
-    for ch in text:
-        sys.stdout.write(ch)
-        sys.stdout.flush()
-        time.sleep(delay)
-    sys.stdout.write(end)
-    sys.stdout.flush()
-
-def ask(prompt):
-    type_out(prompt, end="")
-    sys.stdout.flush()
-    return sys.stdin.readline().strip()
-
-def show_attempts_left(wrongs):
-    left = MAX_WRONG - wrongs
-    msg = f"{left} attempts left." if left != 1 else "1 attempt left."
-    sys.stdout.write(RED + msg + RESET + "\n")
-    sys.stdout.flush()
-
-# ===================== Banner & Art =====================
-BANNER = r"""
-  ____  _                                _                     
- / ___|| |__   __ _ _ __ ___  ___  _ __ | | ___   ___  _ __    
- \___ \| '_ \ / _` | '__/ __|/ _ \| '_ \| |/ _ \ / _ \| '_ \   
-  ___) | | | | (_| | |  \__ \  __/| | | | | (_) | (_) | | | |  
- |____/|_| |_|\__,_|_|  |___/\___||_| |_|_|\___/ \___/|_| |_|  
-"""
-
-ASCII_ART = r"""
-    .--.   .-.
-   |o_o | (o o)   <- Squidward (tiny)
-   |:_/ |  |-|
-  //   \ \ / \
- (|     | )|_|_|
-/'\_   _/`     \
-\___)=(___/  \__\
-
-  <- SpongeBob (small & cute!)
-"""
-
-TITLE = "Krabby Patty Secrets — SpongeBob Crypto CTF (Shamshoon Edition)"
-
-# ===================== Flag Parts (Base64) =====================
-# Decoded parts join to: HATS{SPONGE_BOB_LOVES_KRABBY_PATTIES}
-FLAG_PARTS_PLAIN = ["HATS{", "SPONGE_", "BOB_LOVES_", "KRABBY_", "PATTIES}"]
-FLAG_PARTS_B64   = [base64.b64encode(p.encode()).decode() for p in FLAG_PARTS_PLAIN]
-
-# ===================== Stages (Hard + Tricky) =====================
-# كل مرحلة فيها تلميح ضمني داخل النص، لكن ما في حلول تلقائية جاهزة.
-stages = [
-    # Stage 1 — Base64url مُشوَّه + Homoglyphs + Reverse + No padding in prompt
-    {
-        "intro": "Spatula edge note:\n  \u0406WYytEI5R3c1J\u0417S\n\nDoodle: “no dressing, flip the patty”\n",
-        # Expected: "KRUSTY KRAB"
-        "answer_variants": [
-            "KRUSTY KRAB", "Krusty Krab", "krusty krab", "krustykrab", "KRUSTYKRAB"
-        ],
-        "hint": "Some letters aren’t what they look like. Normalize, flip, then decode safely."
-    },
-
-    # Stage 2 — Keyboard layout confusion (Dvorak <-> Qwerty) + spacing noise
-    {
-        "intro": "Squidward typed this with “his own layout”:\n  Cfrfcp   Cffycp\n\nFootnote: “mind the rests between notes”\n",
-        # Expected: "BIKINI BOTTOM"
-        "answer_variants": [
-            "BIKINI BOTTOM", "Bikini Bottom", "bikini bottom", "bikinibottom", "BIKINIBOTTOM"
-        ],
-        "hint": "Try reading it as if it were typed on a different keyboard layout."
-    },
-
-    # Stage 3 — Morse inverted (dot<->dash) + per-letter reversal + zero-width spaces
-    {
-        "intro": "Jellyfish buzz:\n  • –– ••\u200b   – • –    ••– •–•   •• –––\n\nNote: “flip the poles, currents flow backward… (watch for invisible trails)”\n",
-        # Expected: "GARY THE SNAIL"
-        "answer_variants": [
-            "GARY THE SNAIL", "Gary The Snail", "gary the snail", "GARYTHESNAIL", "garythesnail"
-        ],
-        "hint": "Normalize spacing, swap dot/dash, then reverse within letters."
-    },
-
-    # Stage 4 — Auto-key XOR (key from embedded arithmetic)
-    {
-        "intro": "Receipt hex (spilled soda on it):\n  11 5A 0F 1C 55 0E 11 5E 1E 12 12 59 5E 10\n\nCashier scribble:\n  “Total: 3 krabby patties @ 17 each + 2 drinks @ 4”\n",
-        # Expected: "SECRET FORMULA"
-        "answer_variants": [
-            "SECRET FORMULA", "Secret Formula", "secret formula", "SECRETFORMULA", "secretformula"
-        ],
-        "hint": "Compute the total, start there, and let each recovered byte drive the next."
-    },
-
-    # Stage 5 — Base58 then simple letter swaps (A↔E, O↔U, T↔L)
-    {
-        "intro": "Tip jar note:\n  WXB3byRCTmnCp5n7ize\n\nChalkboard:\n  A↔E, O↔U, T↔L  (vowels sound funny today…)\n",
-        # Expected: "PLANKTON RULES"
-        "answer_variants": [
-            "PLANKTON RULES", "Plankton Rules", "plankton rules", "PLANKTONRULES", "planktonrules"
-        ],
-        "hint": "It’s not Base64. After decoding, letters may have swapped partners."
-    },
+ITEMS = [
+    ("mug", 60),
+    ("tshirt", 80),
+    ("poster", 40),
+    ("sticker", 10),
+    ("hat", 999_999),  # must be bought, then Checkout to reveal flag
 ]
 
-# ===================== Runner =====================
+BANNER = r"""
+╔════════════════════════════════════════════════════════════════════════════╗
+║                      ✨   4 H A T S   S H O P   ✨                        ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║  Balance starts at $100.                                                   ║
+║                                                                            ║
+║  Buying the HAT and checking out reveals the reward.                       ║
+╚════════════════════════════════════════════════════════════════════════════╝
+"""
+
+def slow_print(text: str, delay=TYPE_DELAY, end="\n"):
+    for ch in text:
+        sys.stdout.write(ch); sys.stdout.flush()
+        time.sleep(delay)
+    sys.stdout.write(end); sys.stdout.flush()
+
+def banner_print():
+    for line in BANNER.strip("\n").splitlines():
+        slow_print(line, delay=FAST_BANNER_DELAY)
+    sys.stdout.write("\n"); sys.stdout.flush()
+
+def hr():
+    slow_print("─" * 74)
+
+def chrome_header(title: str, balance: int, total: int, discount: Decimal):
+    sys.stdout.write("\n")
+    slow_print("╔" + "═" * 74 + "╗", delay=FAST_BANNER_DELAY)
+    slow_print(f"║ {title:<72} ║", delay=FAST_BANNER_DELAY)
+    slow_print("╠" + "═" * 74 + "╣", delay=FAST_BANNER_DELAY)
+    info = f"Balance: ${balance} | Cart Total: ${total} | Discount: {discount if discount else 0}"
+    slow_print(f"║ {info:<72} ║", delay=FAST_BANNER_DELAY)
+    slow_print("╚" + "═" * 74 + "╝", delay=FAST_BANNER_DELAY)
+
+def show_main_menu(balance, total, discount):
+    chrome_header("MAIN MENU", balance, total, discount)
+    slow_print("1) Shop")
+    slow_print("2) Cart")
+    slow_print("3) Discount")
+    slow_print("4) Checkout")
+    slow_print("5) Exit")
+    hr()
+
+def show_shop_list(balance, total, discount):
+    chrome_header("BOUTIQUE", balance, total, discount)
+    for i, (name, price) in enumerate(ITEMS, start=1):
+        slow_print(f"{i}) {name:<10}  —  ${price}")
+    slow_print("0) Back")
+    hr()
+
+class Session:
+    def __init__(self):
+        self.balance = 100
+        self.sid = secrets.token_hex(4)
+        self.cart = []
+        self.last_discount_value = Decimal("0")
+
+    def total(self):
+        return sum(price for _, price in self.cart)
+
+def parse_numeric(expr: str):
+    expr = expr.strip().replace("_", "")
+    if not expr:
+        raise InvalidOperation("empty")
+    if not all(c.isdigit() or c in "+-." for c in expr):
+        raise InvalidOperation("non-numeric")
+    val = Decimal(expr)
+    if val.is_nan() or val.is_infinite():
+        raise InvalidOperation("nan/inf")
+    return val
+
+def show_cart(s: Session):
+    chrome_header("YOUR CART", s.balance, s.total(), s.last_discount_value)
+    if not s.cart:
+        slow_print("No items yet.")
+    else:
+        for i, (name, price) in enumerate(s.cart, start=1):
+            slow_print(f"{i}) {name:<10}  —  ${price}")
+        slow_print(f"\nSubtotal: ${s.total()}")
+        if s.last_discount_value:
+            payable = max(0, s.total() - int(s.last_discount_value))
+            slow_print(f"After Discount: ${payable}")
+    hr()
+
+def add_by_number(s: Session, num: int):
+    if num < 1 or num > len(ITEMS):
+        slow_print("Invalid selection."); return
+    idx = num - 1
+    name, price = ITEMS[idx]
+    if price > s.balance:
+        slow_print(f"Insufficient balance. You have ${s.balance}."); return
+    s.balance -= price
+    s.cart.append((name, price))
+    slow_print(f"Added {name}. Balance now ${s.balance}.")
+
+def hidden_add_balance(s: Session, line: str):
+    parts = line.strip().split(maxsplit=1)
+    if len(parts) == 1:
+        slow_print("Enter amount to add:")
+        amt_in = input("amount> ").strip()
+    else:
+        amt_in = parts[1].strip()
+    if not (amt_in.lstrip("+-").isdigit()):
+        slow_print("Amount must be an integer."); return
+    amt = int(amt_in)
+    if amt <= 0:
+        slow_print("Amount must be positive."); return
+    if amt > 1_000_000_000:
+        slow_print("Amount too large."); return
+    s.balance += amt
+    slow_print(f"Balance updated: +${amt} → ${s.balance}")
+
 def main():
-    # Greeting
-    type_out(BANNER, delay=0.001)
-    type_out(BOLD + TITLE + RESET)
-    type_out(ASCII_ART)
-    type_out("Welcome to Bikini Bottom! 🧽🍍\n")
-    type_out("Rules:\n- 5 crypto stages.\n- You have only 3 wrong attempts total.\n- Each correct answer reveals one Base64 flag part.\n- Decode each part from Base64 and join in order for the final flag.\n")
-    type_out("Good luck, sailor! 🦀\n\n")
+    if not os.path.exists("flag.txt"):
+        with open("flag.txt", "w") as f:
+            f.write(FLAG + "\n")
 
-    wrongs = 0
-    obtained = []
+    s = Session()
+    banner_print()
+    slow_print(f"(session: {s.sid})\n")
+    mode = "menu"
+    show_main_menu(s.balance, s.total(), s.last_discount_value)
 
-    for i, stage in enumerate(stages, 1):
-        type_out(f"--- Stage {i} ---\n")
-        type_out(stage["intro"] + "\n")
+    while True:
+        try:
+            cmd = input("◈ ").strip()
+        except (EOFError, KeyboardInterrupt):
+            slow_print("\nGoodbye."); break
+        if not cmd:
+            continue
 
-        while True:
-            ans = ask("> Your answer: ").strip()
-            if ans in stage["answer_variants"]:
-                type_out("✅ Correct! Here’s your Base64 flag part:")
-                part_b64 = FLAG_PARTS_B64[i-1]
-                type_out(f"  [Part {i}/5]  {part_b64}\n")
-                obtained.append(part_b64)
-                type_out("💡 Tip: keep it safe; decode all parts at the end and join in order.\n")
-                break
+        # Hidden command (intended vuln #1): add <amount>
+        if cmd.lower().startswith("add"):
+            hidden_add_balance(s, cmd)
+            if mode == "shop":
+                show_shop_list(s.balance, s.total(), s.last_discount_value)
             else:
-                wrongs += 1
-                type_out("❌ Incorrect.")
-                if wrongs >= MAX_WRONG:
-                    type_out(RED + "No attempts left! Reconnect to try again.\n" + RESET)
-                    return
-                show_attempts_left(wrongs)
-                # Show hint after the second mistake on a given stage to keep it tough
-                if wrongs % 2 == 0:
-                    type_out(f"Hint: {stage['hint']}\n")
+                show_main_menu(s.balance, s.total(), s.last_discount_value)
+            continue
 
-    # Success
-    type_out(BOLD + "\n🎉 Nice! You collected all parts." + RESET)
-    type_out("Here are the Base64 parts you earned:")
-    for idx, p in enumerate(obtained, 1):
-        type_out(f"  [Part {idx}/5] {p}")
-    type_out("\nDecode each part from Base64 and join them in order for the final flag.")
-    type_out("🚩 Format reminder: HATS{...}\n")
-    type_out("See you at the Krusty Krab! 🍔")
-    
+        # SHOP mode: pick item number, 0 to back
+        if mode == "shop":
+            if cmd.isdigit():
+                n = int(cmd)
+                if n == 0:
+                    mode = "menu"
+                    show_main_menu(s.balance, s.total(), s.last_discount_value)
+                else:
+                    add_by_number(s, n)
+                    show_shop_list(s.balance, s.total(), s.last_discount_value)
+            else:
+                slow_print("Enter item number or 0 to go back.")
+            continue
+
+        # MENU mode only numbers
+        if not cmd.isdigit():
+            slow_print("Use numbers 1-5.")
+            show_main_menu(s.balance, s.total(), s.last_discount_value)
+            continue
+
+        choice = int(cmd)
+
+        if choice == 1:
+            mode = "shop"
+            show_shop_list(s.balance, s.total(), s.last_discount_value)
+
+        elif choice == 2:
+            show_cart(s)
+            show_main_menu(s.balance, s.total(), s.last_discount_value)
+
+        elif choice == 3:
+            chrome_header("DISCOUNT CONSOLE", s.balance, s.total(), s.last_discount_value)
+            slow_print("Enter a numeric discount")
+            expr = input("expr> ")
+            try:
+                val = parse_numeric(expr)
+            except InvalidOperation:
+                slow_print("Discount must be a number. Set to 0.")
+                s.last_discount_value = Decimal("0")
+            else:
+                if val < 0:
+                    slow_print("Negative discount is not allowed. Set to 0.")
+                    s.last_discount_value = Decimal("0")
+                else:
+                    s.last_discount_value = val
+                    slow_print(f"=> saved discount: {s.last_discount_value}")
+                    # Intended vuln #2: high numeric discount grants bonus credit
+                    if val >= HIGH_DISCOUNT_THRESHOLD:
+                        s.balance += BONUS_CREDIT
+                        slow_print(f"Super discount detected! Bonus +${BONUS_CREDIT} credited.")
+            hr()
+            show_main_menu(s.balance, s.total(), s.last_discount_value)
+
+        elif choice == 4:
+            chrome_header("CHECKOUT", s.balance, s.total(), s.last_discount_value)
+            if any(name == "hat" for name, _ in s.cart):
+                slow_print(open("flag.txt").read().strip())
+            else:
+                slow_print("You don't have the required premium item.")
+            hr()
+            show_main_menu(s.balance, s.total(), s.last_discount_value)
+
+        elif choice == 5:
+            slow_print("Goodbye.")
+            break
+
+        else:
+            slow_print("Invalid selection.")
+            show_main_menu(s.balance, s.total(), s.last_discount_value)
 
 if __name__ == "__main__":
-    try:
-        try:
-            sys.stdout.reconfigure(line_buffering=True)
-        except Exception:
-            pass
-        main()
-    except Exception:
-        sys.stdout.write("\nAn unexpected error occurred. Please try again later.\n")
-        sys.stdout.flush()
+    main()
